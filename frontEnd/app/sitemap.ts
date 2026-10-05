@@ -1,7 +1,7 @@
 import { MetadataRoute } from 'next'
  
 export default function sitemap(): MetadataRoute.Sitemap {
-  const baseUrl = 'https://syntaxist.nileshrana.me'
+  const baseUrl = 'https://syntaxist.nileshrana.tech'
   
   // Add language-specific routes
   const languages = [

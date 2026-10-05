@@ -7,7 +7,7 @@
 
 > A powerful, online code compiler supporting 10+ programming languages with real-time execution, complexity analysis, and intelligent code optimization.
 
-🌐 **Live Demo**: <a href="https://syntaxist.nileshrana.me/" target="_blank">syntaxist.nileshrana.me</a>
+🌐 **Live Demo**: <a href="https://syntaxist.nileshrana.tech/" target="_blank">syntaxist.nileshrana.tech</a>
 
 ## ✨ Features
 
@@ -64,7 +64,7 @@
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/nileXrana/Syntaxist-Online-Compiler.git
+git clone https://github.com/nileshxrana/Syntaxist-Online-Compiler.git
 cd Syntaxist-Online-Compiler
 ```
 
@@ -132,9 +132,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 👨‍💻 Author
 
 **Nilesh Rana**
-- GitHub: [@nileXrana](https://github.com/nileXrana)
-- LinkedIn: [@nileXrana](https://www.linkedin.com/in/nileXrana)
-- Website: [nileshrana.me](https://nileshrana.me)
+- GitHub: [@nileshxrana](https://github.com/nileshxrana)
+- LinkedIn: [@nileshxrana](https://www.linkedin.com/in/nileshxrana)
+- Website: [nileshrana.tech](https://nileshrana.tech)
 
 ## 🙏 Acknowledgments
 
@@ -147,7 +147,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ---
 
 <div align="center">
-  Made with ❤️ by nileXrana
+  Made with ❤️ by nileshxrana
   
   ⭐ Star on GitHub — it motivates a lot🔥
 </div>

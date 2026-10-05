@@ -84,7 +84,7 @@ export const metadata: Metadata = {
     address: false,
     telephone: false,
   },
-  metadataBase: new URL('https://syntaxist.nileshrana.me'),
+  metadataBase: new URL('https://syntaxist.nileshrana.tech'),
   alternates: {
     canonical: '/',
   },
@@ -92,11 +92,11 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Syntaxist - Online Code Compiler",
     description: "Free online code compiler with AI-powered complexity analysis. Run Python, JavaScript, C++, Java, Go, Rust, and more instantly with real-time execution.",
-    url: 'https://syntaxist.nileshrana.me',
+    url: 'https://syntaxist.nileshrana.tech',
     siteName: 'Syntaxist',
     images: [
       {
-        url: 'https://syntaxist.nileshrana.me/logo2.png',
+        url: 'https://syntaxist.nileshrana.tech/logo2.png',
         width: 20,
         height: 20,
         alt: 'Syntaxist Online Compiler',
@@ -155,7 +155,7 @@ export default function RootLayout({
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
         <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
         <meta name="format-detection" content="telephone=no" />
-        <link rel="canonical" href="https://syntaxist.nileshrana.me" />
+        <link rel="canonical" href="https://syntaxist.nileshrana.tech" />
         
         {/* Preconnect for Performance */}
         <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -177,8 +177,8 @@ export default function RootLayout({
                 priceCurrency: 'USD',
               },
               description: 'AI-powered online code compiler supporting 10+ programming languages with real-time execution, complexity analysis, and code optimization.',
-              url: 'https://syntaxist.nileshrana.me',
-              screenshot: 'https://syntaxist.nileshrana.me/logo2.png',
+              url: 'https://syntaxist.nileshrana.tech',
+              screenshot: 'https://syntaxist.nileshrana.tech/logo2.png',
               aggregateRating: {
                 '@type': 'AggregateRating',
                 ratingValue: '4.8',
@@ -236,11 +236,11 @@ export default function RootLayout({
               '@context': 'https://schema.org',
               '@type': 'Organization',
               name: 'Syntaxist',
-              url: 'https://syntaxist.nileshrana.me',
-              logo: 'https://syntaxist.nileshrana.me/logo2.png',
+              url: 'https://syntaxist.nileshrana.tech',
+              logo: 'https://syntaxist.nileshrana.tech/logo2.png',
               sameAs: [
                 'https://twitter.com/syntaxist',
-                'https://github.com/nileXrana/Syntaxist-Online-Compiler',
+                'https://github.com/nileshxrana/Syntaxist-Online-Compiler',
               ],
             }),
           }}
@@ -258,7 +258,7 @@ export default function RootLayout({
                   '@type': 'ListItem',
                   position: 1,
                   name: 'Home',
-                  item: 'https://syntaxist.nileshrana.me/',
+                  item: 'https://syntaxist.nileshrana.tech/',
                 },
               ],
             }),

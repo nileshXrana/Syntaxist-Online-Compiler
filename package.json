@@ -28,17 +28,17 @@
   "author": {
     "name": "Nilesh Rana",
     "email": "imp.communicate@gmail.com",
-    "url": "https://nileshrana.me"
+    "url": "https://nileshrana.tech"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nileXrana/Syntaxist-Online-Compiler.git"
+    "url": "https://github.com/nileshxrana/Syntaxist-Online-Compiler.git"
   },
   "bugs": {
-    "url": "https://github.com/nileXrana/Syntaxist-Online-Compiler/issues"
+    "url": "https://github.com/nileshxrana/Syntaxist-Online-Compiler/issues"
   },
-  "homepage": "https://syntaxist.nileshrana.me",
+  "homepage": "https://syntaxist.nileshrana.tech",
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
