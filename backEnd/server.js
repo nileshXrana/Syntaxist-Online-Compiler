@@ -386,9 +386,11 @@ wss.on("connection", (ws, req) => {
         "--rm",
         "-i",
 
+        // No internet access
         "--network",
         "none",
 
+        // Resource limits
         "--memory",
         "256m",
 
@@ -401,25 +403,53 @@ wss.on("connection", (ws, req) => {
         "--pids-limit",
         String(MAX_PIDS),
 
-        // Run as the same user that owns the host /tmp directory
+        // Run as the same UID/GID as the Node process
         "--user",
         `${process.getuid()}:${process.getgid()}`,
 
+        // Security
         "--cap-drop",
         "ALL",
 
         "--security-opt",
         "no-new-privileges",
 
+        // Writable environment for compilers/runtimes
+        "-e",
+        "HOME=/tmp",
+
+        "-e",
+        "TMPDIR=/tmp",
+
+        "-e",
+        "XDG_CACHE_HOME=/tmp/.cache",
+
+        // Go
+        "-e",
+        "GOCACHE=/tmp/go-build",
+
+        "-e",
+        "GOPATH=/tmp/go",
+
+        // .NET / C#
+        "-e",
+        "DOTNET_CLI_HOME=/tmp/dotnet",
+
+        "-e",
+        "NUGET_PACKAGES=/tmp/nuget",
+
+        // Container name
         "--name",
         containerName,
 
+        // Source directory
         "-v",
         `${currentDir}:/workspace`,
 
         "-w",
         "/workspace",
 
+        // Language image
         dockerImage,
 
         "bash",
