@@ -133,16 +133,21 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(({ selectedLang
     });
   };
 
-  const handleRun = async () => {
+  const handleRun = () => {
+    // Start loading immediately
     setIsRunning(true);
 
-    // Setup callback to stop loading when output is received
+    // The loading state should only be turned OFF when:
+    // 1. Process exits
+    // 2. Backend sends an error/timeout
     terminalRef.current?.setOnLoadingChange?.((isLoading) => {
       setIsRunning(isLoading);
     });
 
-    // Run code via WebSocket
-    terminalRef.current?.runCode(code, selectedLanguage);
+    terminalRef.current?.runCode(
+      code,
+      selectedLanguage
+    );
   };
 
   const handleCopyOutput = async () => {
@@ -184,7 +189,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(({ selectedLang
               {isRunning ? (
                 <AiOutlineLoading3Quarters className={`animate-spin ${isDarkMode ? 'text-white' : 'text-white'}`} />
               ) : (
-                <BiLogoPlayStore className="hover:scale-125"/>
+                <BiLogoPlayStore className="hover:scale-125" />
               )}
             </button>
           </div>

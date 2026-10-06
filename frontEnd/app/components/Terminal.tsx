@@ -79,7 +79,7 @@ const TerminalBox = forwardRef<TerminalHandle, TerminalBoxProps>(({ isDarkMode =
 
         // Send input to backend if WebSocket is connected
         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN && term) {
-          
+
           // Echo input locally for immediate feedback
           // Docker stdin doesn't echo by default in non-TTY mode
           if (code === 127 || code === 8) {
@@ -212,10 +212,10 @@ const TerminalBox = forwardRef<TerminalHandle, TerminalBoxProps>(({ isDarkMode =
 
       // Check if language is supported
       const supportedLanguages = [
-        "cpp", "python", "java", "javascript", "typescript", 
+        "cpp", "python", "java", "javascript", "typescript",
         "go", "ruby", "php", "csharp", "swift", "kotlin", "rust"
       ];
-      
+
       if (!supportedLanguages.includes(backendLang)) {
         term.clear();
         term.write(`\x1b[31m[Error: ${lang} is not yet supported.]\x1b[0m\r\n`);
@@ -244,57 +244,111 @@ const TerminalBox = forwardRef<TerminalHandle, TerminalBoxProps>(({ isDarkMode =
         ws.send(JSON.stringify({ type: "run", lang: backendLang, code }));
       };
 
+
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
 
+          // --------------------------------------------------------
+          // STDOUT
+          // --------------------------------------------------------
+
           if (message.type === "stdout") {
-            // Stop loading when first output is received
+            // Program is still running.
+            // DO NOT set loading to false here.
+            try {
+              term.write(
+                message.data.replace(/\n/g, "\r\n")
+              );
+            } catch {
+              // Suppress xterm parsing errors
+            }
+          }
+
+          // --------------------------------------------------------
+          // STDERR
+          // --------------------------------------------------------
+
+          else if (message.type === "stderr") {
+            // stderr does NOT mean the process has finished.
+            // DO NOT set loading to false here.
+            try {
+              term.write(
+                `\x1b[31m${message.data.replace(
+                  /\n/g,
+                  "\r\n"
+                )
+                }\x1b[0m`
+              );
+            } catch {
+              // Suppress xterm parsing errors
+            }
+          }
+
+          // --------------------------------------------------------
+          // PROCESS EXITED
+          // --------------------------------------------------------
+
+          else if (message.type === "exit") {
+            // Execution is actually finished here.
             onLoadingChangeRef.current?.(false);
-            // Write stdout to terminal
+
+            const color =
+              message.code === 0 ? "32" : "31";
+
             try {
-              term.write(message.data.replace(/\n/g, "\r\n"));
+              term.write(
+                `\r\n\x1b[${color}m[Process exited with code ${message.code}]\x1b[0m\r\n`
+              );
             } catch {
               // Suppress xterm parsing errors
             }
-          } else if (message.type === "stderr") {
-            // Stop loading when error output is received
-            onLoadingChangeRef.current?.(false);
-            // Write stderr in red
-            try {
-              term.write(`\x1b[31m${message.data.replace(/\n/g, "\r\n")}\x1b[0m`);
-            } catch {
-              // Suppress xterm parsing errors
-            }
-          } else if (message.type === "exit") {
-            // Execution finished
-            const color = message.code === 0 ? "32" : "31"; // green for success, red for error
-            try {
-              term.write(`\r\n\x1b[${color}m[Process exited with code ${message.code}]\x1b[0m\r\n`);
-            } catch {
-              // Suppress xterm parsing errors
-            }
-            ws.close();
-          } else if (message.type === "error") {
-            // Stop loading on error
-            onLoadingChangeRef.current?.(false);
-            // Error occurred
-            try {
-              term.write(`\r\n\x1b[31m[Error: ${message.data}]\x1b[0m\r\n`);
-            } catch {
-              // Suppress xterm parsing errors
-            }
+
+            // Close WebSocket after process has finished
             ws.close();
           }
+
+          // --------------------------------------------------------
+          // BACKEND ERROR / TIMEOUT
+          // --------------------------------------------------------
+
+          else if (message.type === "error") {
+            // Backend says execution has stopped.
+            onLoadingChangeRef.current?.(false);
+
+            try {
+              term.write(
+                `\r\n\x1b[31m[Error: ${message.data}]\x1b[0m\r\n`
+              );
+            } catch {
+              // Suppress xterm parsing errors
+            }
+
+            // Close WebSocket after error
+            ws.close();
+          }
+
         } catch (error) {
-          console.error("Failed to parse WebSocket message:", error);
+          console.error(
+            "Failed to parse WebSocket message:",
+            error
+          );
+
+          onLoadingChangeRef.current?.(false);
         }
       };
 
+
       ws.onerror = (error) => {
         console.error("WebSocket error:", error);
+
         onLoadingChangeRef.current?.(false);
-        term.write("\r\n\x1b[31m[WebSocket connection error - Make sure backend server is running]\x1b[0m\r\n");
+
+        term.write(
+          "\r\n\x1b[31m[WebSocket connection error]\x1b[0m\r\n"
+        );
+
+        ws.close();
       };
 
       ws.onclose = () => {
