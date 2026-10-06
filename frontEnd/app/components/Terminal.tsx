@@ -328,6 +328,18 @@ const TerminalBox = forwardRef<TerminalHandle, TerminalBoxProps>(({ isDarkMode =
             ws.close();
           }
 
+          else if (message.type === "queued") {
+            term.write(
+              `\r\n\x1b[33m[Queued - position ${message.position}]\x1b[0m\r\n`
+            );
+          }
+
+          else if (message.type === "started") {
+            term.write(
+              `\r\n\x1b[36m[Execution started]\x1b[0m\r\n\r\n`
+            );
+          }
+
         } catch (error) {
           console.error(
             "Failed to parse WebSocket message:",
@@ -353,6 +365,9 @@ const TerminalBox = forwardRef<TerminalHandle, TerminalBoxProps>(({ isDarkMode =
 
       ws.onclose = () => {
         socketRef.current = null;
+
+        // Make sure the loading state doesn't stay stuck
+        onLoadingChangeRef.current?.(false);
       };
     }
   }));
