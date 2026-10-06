@@ -28,8 +28,8 @@ const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MB
 // Maximum number of processes inside one container
 const MAX_PIDS = 64;
 
-// Maximum number of compiler jobs running on the VPS at once
-const MAX_CONCURRENT_RUNS = 5;
+// VPS has 2 vCPUs, so allow only 2 compiler jobs at once
+const MAX_CONCURRENT_RUNS = 2;
 
 // Minimum time between two "run" requests from one client
 const RUN_COOLDOWN = 1000; // 1 second
@@ -38,10 +38,7 @@ let activeRuns = 0;
 
 // Allowed browser origins
 const allowedOrigins = new Set(
-  [
-    "http://localhost:3000",
-    process.env.FRONTEND_ORIGIN,
-  ].filter(Boolean)
+  ["http://localhost:3000", process.env.FRONTEND_ORIGIN].filter(Boolean),
 );
 
 // ============================================================
@@ -85,12 +82,9 @@ server.on("upgrade", (req, socket, head) => {
 // ============================================================
 
 wss.on("connection", (ws, req) => {
-  console.log(
-    "Client connected from:",
-    req.headers.origin || "unknown origin"
-  );
+  console.log("Client connected from:", req.headers.origin || "unknown origin");
 
-  // Currently running Docker process
+  // Currently running Docker CLI process
   let proc = null;
 
   // Current Docker container name
@@ -162,16 +156,13 @@ wss.on("connection", (ws, req) => {
 
   const killContainer = () => {
     if (containerName) {
-      console.log(`🛑 Killing container: ${containerName}`);
+      console.log(`🛑 Force removing container: ${containerName}`);
 
-      // Explicitly kill the actual container
-      const killProc = spawn("docker", [
-        "kill",
-        containerName,
-      ]);
+      // Explicitly stop and remove the actual container
+      const removeProc = spawn("docker", ["rm", "-f", containerName]);
 
-      killProc.on("error", (err) => {
-        console.error("❌ Failed to kill container:", err);
+      removeProc.on("error", (err) => {
+        console.error("❌ Failed to remove container:", err);
       });
     }
 
@@ -357,10 +348,7 @@ wss.on("connection", (ws, req) => {
 
       const id = uuidv4();
 
-      currentDir = path.join(
-        os.tmpdir(),
-        id
-      );
+      currentDir = path.join(os.tmpdir(), id);
 
       try {
         fs.mkdirSync(currentDir, {
@@ -368,10 +356,7 @@ wss.on("connection", (ws, req) => {
         });
 
         // Write user source code
-        fs.writeFileSync(
-          path.join(currentDir, filename),
-          data.code
-        );
+        fs.writeFileSync(path.join(currentDir, filename), data.code);
       } catch (err) {
         console.error("❌ File creation error:", err);
 
@@ -398,7 +383,7 @@ wss.on("connection", (ws, req) => {
       const dockerCmd = [
         "run",
 
-        // Delete container automatically after exit
+        // Delete container automatically after normal exit
         "--rm",
 
         // Keep stdin open
@@ -416,9 +401,9 @@ wss.on("connection", (ws, req) => {
         "--memory-swap",
         "256m",
 
-        // CPU limit
+        // CPU limit: 1 full vCPU per execution
         "--cpus",
-        "0.5",
+        "1",
 
         // Process limit
         "--pids-limit",
@@ -462,7 +447,7 @@ wss.on("connection", (ws, req) => {
       outputBytes = 0;
 
       console.log(
-        `🚀 Running ${data.lang} | container=${containerName}`
+        `🚀 Running ${data.lang} | container=${containerName} | active=${activeRuns}/${MAX_CONCURRENT_RUNS}`,
       );
 
       proc = spawn("docker", dockerCmd);
@@ -474,9 +459,7 @@ wss.on("connection", (ws, req) => {
       timeout = setTimeout(() => {
         if (!isRunning) return;
 
-        console.log(
-          `⏰ Execution timeout: ${containerName}`
-        );
+        console.log(`⏰ Execution timeout: ${containerName}`);
 
         sendMessage({
           type: "error",
@@ -553,7 +536,7 @@ wss.on("connection", (ws, req) => {
 
       proc.on("close", (code) => {
         console.log(
-          `🏁 Execution finished | container=${containerName} | code=${code}`
+          `🏁 Execution finished | container=${containerName} | code=${code}`,
         );
 
         if (isRunning) {
