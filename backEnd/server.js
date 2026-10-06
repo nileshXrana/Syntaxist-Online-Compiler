@@ -20,7 +20,7 @@ app.use(cors());
 const PORT = 5001;
 
 // Maximum time one program can run
-const EXECUTION_TIMEOUT = 10_000; // 10 seconds
+const EXECUTION_TIMEOUT = 30_000; // 30 seconds
 
 // Maximum combined stdout + stderr
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MB
