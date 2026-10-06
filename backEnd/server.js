@@ -20,23 +20,38 @@ app.use(cors());
 const PORT = 5001;
 
 // Maximum time one program can run
-const EXECUTION_TIMEOUT = 30_000; // 30 seconds
+const EXECUTION_TIMEOUT = 10_000; // 10 seconds
 
 // Maximum combined stdout + stderr
 const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MB
 
+// Maximum source code size
+const MAX_CODE_SIZE_BYTES = 100 * 1024; // 100 KB
+
 // Maximum number of processes inside one container
 const MAX_PIDS = 64;
 
-// VPS has 2 vCPUs, so allow only 2 compiler jobs at once
+// VPS has 2 vCPUs, so only 2 jobs run at once
 const MAX_CONCURRENT_RUNS = 2;
+
+// Maximum number of jobs waiting in memory
+const MAX_QUEUE_SIZE = 500;
 
 // Minimum time between two "run" requests from one client
 const RUN_COOLDOWN = 1000; // 1 second
 
+// ============================================================
+// GLOBAL JOB QUEUE
+// ============================================================
+
 let activeRuns = 0;
 
-// Allowed browser origins
+const executionQueue = [];
+
+// ============================================================
+// ALLOWED ORIGINS
+// ============================================================
+
 const allowedOrigins = new Set(
   ["http://localhost:3000", process.env.FRONTEND_ORIGIN].filter(Boolean),
 );
@@ -61,7 +76,10 @@ const wss = new WebSocketServer({
   maxPayload: 1 * 1024 * 1024,
 });
 
-// Handle HTTP -> WebSocket upgrade
+// ============================================================
+// HTTP -> WEBSOCKET UPGRADE
+// ============================================================
+
 server.on("upgrade", (req, socket, head) => {
   const origin = req.headers.origin;
 
@@ -78,119 +96,469 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 // ============================================================
+// SEND MESSAGE
+// ============================================================
+
+const sendMessage = (ws, message) => {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(message));
+  }
+};
+
+// ============================================================
+// UPDATE QUEUE POSITIONS
+// ============================================================
+
+const notifyQueuePositions = () => {
+  executionQueue.forEach((job, index) => {
+    const position = index + 1;
+
+    if (job.lastQueuePosition !== position) {
+      job.lastQueuePosition = position;
+
+      sendMessage(job.ws, {
+        type: "queued",
+        position,
+      });
+    }
+  });
+};
+
+// ============================================================
+// REMOVE JOB FROM QUEUE
+// ============================================================
+
+const removeQueuedJob = (job) => {
+  const index = executionQueue.indexOf(job);
+
+  if (index !== -1) {
+    executionQueue.splice(index, 1);
+    notifyQueuePositions();
+  }
+};
+
+// ============================================================
+// PROCESS NEXT QUEUED JOBS
+// ============================================================
+
+const processQueue = () => {
+  while (activeRuns < MAX_CONCURRENT_RUNS && executionQueue.length > 0) {
+    const job = executionQueue.shift();
+
+    // Skip cancelled/disconnected jobs
+    if (job.cancelled || job.ws.readyState !== WebSocket.OPEN) {
+      if (job.state.currentJob === job) {
+        job.state.currentJob = null;
+        job.state.isRunning = false;
+      }
+
+      continue;
+    }
+
+    job.lastQueuePosition = null;
+
+    startExecution(job);
+  }
+
+  // Update positions for remaining queued jobs
+  notifyQueuePositions();
+};
+
+// ============================================================
+// CLEANUP JOB
+// ============================================================
+
+const finishJob = (job, exitCode = null) => {
+  if (job.finished) {
+    return;
+  }
+
+  job.finished = true;
+
+  // Clear timeout
+  if (job.timeout) {
+    clearTimeout(job.timeout);
+    job.timeout = null;
+  }
+
+  // Remove temporary directory
+  if (job.currentDir) {
+    try {
+      fs.rmSync(job.currentDir, {
+        recursive: true,
+        force: true,
+      });
+    } catch (err) {
+      console.error("❌ Failed to remove temp directory:", err);
+    }
+
+    job.currentDir = null;
+  }
+
+  // Release concurrency slot
+  if (job.started) {
+    if (activeRuns > 0) {
+      activeRuns--;
+    }
+  }
+
+  const state = job.state;
+
+  if (state.currentJob === job) {
+    state.currentJob = null;
+    state.isRunning = false;
+    state.proc = null;
+    state.containerName = null;
+  }
+
+  // Normal process completion
+  if (exitCode !== null && !job.terminationMessageSent) {
+    sendMessage(job.ws, {
+      type: "exit",
+      code: exitCode,
+    });
+  }
+
+  console.log(
+    `🏁 Job finished | language=${job.lang} | active=${activeRuns}/${MAX_CONCURRENT_RUNS} | queue=${executionQueue.length}`,
+  );
+
+  // Start next waiting jobs
+  setImmediate(processQueue);
+};
+
+// ============================================================
+// KILL CONTAINER
+// ============================================================
+
+const killContainer = (job) => {
+  if (job.containerName) {
+    console.log(`🛑 Killing container: ${job.containerName}`);
+
+    // Explicitly remove the real container
+    const removeProc = spawn("docker", ["rm", "-f", job.containerName]);
+
+    removeProc.on("error", (err) => {
+      console.error("❌ Failed to remove container:", err);
+    });
+  }
+
+  // Also kill Docker CLI process
+  if (job.proc) {
+    try {
+      job.proc.kill("SIGKILL");
+    } catch {
+      // Process may already be closed
+    }
+  }
+};
+
+// ============================================================
+// START EXECUTION
+// ============================================================
+
+const startExecution = (job) => {
+  if (job.cancelled || job.finished || job.ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  const state = job.state;
+
+  job.started = true;
+  activeRuns++;
+
+  // ----------------------------------------------------------
+  // CREATE TEMP DIRECTORY
+  // ----------------------------------------------------------
+
+  const id = uuidv4();
+
+  job.currentDir = path.join(os.tmpdir(), id);
+
+  try {
+    fs.mkdirSync(job.currentDir, {
+      recursive: true,
+    });
+
+    // --------------------------------------------------------
+    // WRITE SOURCE CODE
+    // --------------------------------------------------------
+
+    fs.writeFileSync(path.join(job.currentDir, job.filename), job.code);
+  } catch (err) {
+    console.error("❌ File creation error:", err);
+
+    job.terminationMessageSent = true;
+
+    sendMessage(job.ws, {
+      type: "error",
+      data: "Failed to prepare source code.",
+    });
+
+    finishJob(job);
+
+    return;
+  }
+
+  // ----------------------------------------------------------
+  // CONTAINER NAME
+  // ----------------------------------------------------------
+
+  job.containerName = `compiler-${id}`;
+
+  // ----------------------------------------------------------
+  // DOCKER COMMAND
+  // ----------------------------------------------------------
+
+  const dockerCmd = [
+    "run",
+
+    // Automatically remove container after normal exit
+    "--rm",
+
+    // Keep stdin open
+    "-i",
+
+    // No internet
+    "--network",
+    "none",
+
+    // Memory limit
+    "--memory",
+    "256m",
+
+    // Prevent swap
+    "--memory-swap",
+    "256m",
+
+    // One full vCPU
+    "--cpus",
+    "1",
+
+    // Process limit
+    "--pids-limit",
+    String(MAX_PIDS),
+
+    // Run using same UID/GID as Node process
+    "--user",
+    `${process.getuid()}:${process.getgid()}`,
+
+    // Security
+    "--cap-drop",
+    "ALL",
+
+    "--security-opt",
+    "no-new-privileges",
+
+    // --------------------------------------------------------
+    // Writable compiler/runtime locations
+    // --------------------------------------------------------
+
+    "-e",
+    "HOME=/tmp",
+
+    "-e",
+    "TMPDIR=/tmp",
+
+    "-e",
+    "XDG_CACHE_HOME=/tmp/.cache",
+
+    // Go
+    "-e",
+    "GOCACHE=/tmp/go-build",
+
+    "-e",
+    "GOPATH=/tmp/go",
+
+    // .NET
+    "-e",
+    "DOTNET_CLI_HOME=/tmp/dotnet",
+
+    "-e",
+    "NUGET_PACKAGES=/tmp/nuget",
+
+    // Container name
+    "--name",
+    job.containerName,
+
+    // Source directory
+    "-v",
+    `${job.currentDir}:/workspace`,
+
+    // Working directory
+    "-w",
+    "/workspace",
+
+    // Language image
+    job.dockerImage,
+
+    // Command
+    "bash",
+    "-c",
+    job.execCmd,
+  ];
+
+  // ----------------------------------------------------------
+  // START DOCKER
+  // ----------------------------------------------------------
+
+  sendMessage(job.ws, {
+    type: "started",
+  });
+
+  console.log(
+    `🚀 Running ${job.lang} | container=${job.containerName} | active=${activeRuns}/${MAX_CONCURRENT_RUNS}`,
+  );
+
+  job.proc = spawn("docker", dockerCmd);
+
+  state.proc = job.proc;
+  state.containerName = job.containerName;
+
+  // ----------------------------------------------------------
+  // TIMEOUT
+  // ----------------------------------------------------------
+
+  job.timeout = setTimeout(() => {
+    if (job.finished || job.terminationMessageSent) {
+      return;
+    }
+
+    console.log(`⏰ Execution timeout: ${job.containerName}`);
+
+    job.terminationMessageSent = true;
+
+    sendMessage(job.ws, {
+      type: "error",
+      data: "Execution timed out (10 seconds).",
+    });
+
+    killContainer(job);
+  }, EXECUTION_TIMEOUT);
+
+  // ----------------------------------------------------------
+  // STDOUT
+  // ----------------------------------------------------------
+
+  job.proc.stdout.on("data", (chunk) => {
+    if (job.finished || job.terminationMessageSent) {
+      return;
+    }
+
+    job.outputBytes += chunk.length;
+
+    if (job.outputBytes > MAX_OUTPUT_BYTES) {
+      console.log(`⚠️ Output limit exceeded: ${job.containerName}`);
+
+      job.terminationMessageSent = true;
+
+      sendMessage(job.ws, {
+        type: "error",
+        data: "Output limit exceeded (1 MB).",
+      });
+
+      killContainer(job);
+
+      return;
+    }
+
+    sendMessage(job.ws, {
+      type: "stdout",
+      data: chunk.toString(),
+    });
+  });
+
+  // ----------------------------------------------------------
+  // STDERR
+  // ----------------------------------------------------------
+
+  job.proc.stderr.on("data", (chunk) => {
+    if (job.finished || job.terminationMessageSent) {
+      return;
+    }
+
+    job.outputBytes += chunk.length;
+
+    if (job.outputBytes > MAX_OUTPUT_BYTES) {
+      console.log(`⚠️ Output limit exceeded: ${job.containerName}`);
+
+      job.terminationMessageSent = true;
+
+      sendMessage(job.ws, {
+        type: "error",
+        data: "Output limit exceeded (1 MB).",
+      });
+
+      killContainer(job);
+
+      return;
+    }
+
+    sendMessage(job.ws, {
+      type: "stderr",
+      data: chunk.toString(),
+    });
+  });
+
+  // ----------------------------------------------------------
+  // DOCKER PROCESS ERROR
+  // ----------------------------------------------------------
+
+  job.proc.on("error", (err) => {
+    console.error("❌ Docker process error:", err);
+
+    if (!job.terminationMessageSent) {
+      job.terminationMessageSent = true;
+
+      sendMessage(job.ws, {
+        type: "error",
+        data: "Failed to start compiler.",
+      });
+    }
+
+    finishJob(job);
+  });
+
+  // ----------------------------------------------------------
+  // DOCKER PROCESS CLOSED
+  // ----------------------------------------------------------
+
+  job.proc.on("close", (code) => {
+    finishJob(job, code);
+  });
+};
+
+// ============================================================
 // WEBSOCKET CONNECTION
 // ============================================================
 
 wss.on("connection", (ws, req) => {
   console.log("Client connected from:", req.headers.origin || "unknown origin");
 
-  // Currently running Docker CLI process
-  let proc = null;
-
-  // Current Docker container name
-  let containerName = null;
-
-  // Current temporary directory
-  let currentDir = null;
-
-  // Execution timeout
-  let timeout = null;
-
-  // Track output size
-  let outputBytes = 0;
-
-  // Prevent multiple executions on the same WebSocket
-  let isRunning = false;
-
-  // Used for simple per-client rate limiting
-  let lastRunAt = 0;
-
-  // ------------------------------------------------------------
-  // SEND MESSAGE HELPER
-  // ------------------------------------------------------------
-
-  const sendMessage = (message) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(message));
-    }
+  const state = {
+    ws,
+    proc: null,
+    containerName: null,
+    currentJob: null,
+    isRunning: false,
+    lastRunAt: 0,
   };
 
-  // ------------------------------------------------------------
-  // CLEANUP
-  // ------------------------------------------------------------
-
-  const cleanup = () => {
-    if (timeout) {
-      clearTimeout(timeout);
-      timeout = null;
-    }
-
-    if (currentDir) {
-      try {
-        fs.rmSync(currentDir, {
-          recursive: true,
-          force: true,
-        });
-      } catch (err) {
-        console.error("❌ Failed to remove temp directory:", err);
-      }
-
-      currentDir = null;
-    }
-
-    proc = null;
-    containerName = null;
-
-    if (isRunning) {
-      isRunning = false;
-
-      if (activeRuns > 0) {
-        activeRuns--;
-      }
-    }
-  };
-
-  // ------------------------------------------------------------
-  // KILL CONTAINER
-  // ------------------------------------------------------------
-
-  const killContainer = () => {
-    if (containerName) {
-      console.log(`🛑 Force removing container: ${containerName}`);
-
-      // Explicitly stop and remove the actual container
-      const removeProc = spawn("docker", ["rm", "-f", containerName]);
-
-      removeProc.on("error", (err) => {
-        console.error("❌ Failed to remove container:", err);
-      });
-    }
-
-    // Also kill the Docker CLI process if it is still alive
-    if (proc) {
-      try {
-        proc.kill("SIGKILL");
-      } catch (err) {
-        // Process may already have exited
-      }
-    }
-  };
-
-  // ============================================================
-  // WEBSOCKET MESSAGE HANDLER
-  // ============================================================
+  // ==========================================================
+  // MESSAGE HANDLER
+  // ==========================================================
 
   ws.on("message", (msg) => {
     let data;
 
-    // ----------------------------------------------------------
-    // PARSE MESSAGE
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // PARSE JSON
+    // --------------------------------------------------------
 
     try {
       data = JSON.parse(msg.toString());
     } catch {
-      sendMessage({
+      sendMessage(ws, {
         type: "error",
         data: "Invalid JSON message",
       });
@@ -198,17 +566,17 @@ wss.on("connection", (ws, req) => {
       return;
     }
 
-    // ==========================================================
-    // RUN PROGRAM
-    // ==========================================================
+    // ========================================================
+    // RUN
+    // ========================================================
 
     if (data.type === "run") {
-      // --------------------------------------------------------
-      // Only one execution per WebSocket
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // One job per WebSocket
+      // ------------------------------------------------------
 
-      if (isRunning) {
-        sendMessage({
+      if (state.isRunning) {
+        sendMessage(ws, {
           type: "error",
           data: "A program is already running. Please wait for it to finish.",
         });
@@ -216,27 +584,14 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      // --------------------------------------------------------
-      // Global concurrent execution limit
-      // --------------------------------------------------------
-
-      if (activeRuns >= MAX_CONCURRENT_RUNS) {
-        sendMessage({
-          type: "error",
-          data: "Compiler is busy. Please try again shortly.",
-        });
-
-        return;
-      }
-
-      // --------------------------------------------------------
-      // Rate limiting
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // RATE LIMIT
+      // ------------------------------------------------------
 
       const now = Date.now();
 
-      if (now - lastRunAt < RUN_COOLDOWN) {
-        sendMessage({
+      if (now - state.lastRunAt < RUN_COOLDOWN) {
+        sendMessage(ws, {
           type: "error",
           data: "Please wait before running another program.",
         });
@@ -244,14 +599,14 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      lastRunAt = now;
+      state.lastRunAt = now;
 
-      // --------------------------------------------------------
-      // Validate code
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // VALIDATE CODE
+      // ------------------------------------------------------
 
       if (typeof data.code !== "string") {
-        sendMessage({
+        sendMessage(ws, {
           type: "error",
           data: "Invalid source code.",
         });
@@ -259,9 +614,37 @@ wss.on("connection", (ws, req) => {
         return;
       }
 
-      // --------------------------------------------------------
-      // Language configuration
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // SOURCE CODE SIZE LIMIT
+      // ------------------------------------------------------
+
+      const codeSizeBytes = Buffer.byteLength(data.code, "utf8");
+
+      if (codeSizeBytes > MAX_CODE_SIZE_BYTES) {
+        sendMessage(ws, {
+          type: "error",
+          data: "Source code is too large. Maximum allowed size is 100 KB.",
+        });
+
+        return;
+      }
+
+      // ------------------------------------------------------
+      // QUEUE LIMIT
+      // ------------------------------------------------------
+
+      if (executionQueue.length >= MAX_QUEUE_SIZE) {
+        sendMessage(ws, {
+          type: "error",
+          data: "Compiler queue is full. Please try again later.",
+        });
+
+        return;
+      }
+
+      // ------------------------------------------------------
+      // LANGUAGE CONFIG
+      // ------------------------------------------------------
 
       let filename;
       let dockerImage;
@@ -334,7 +717,7 @@ wss.on("connection", (ws, req) => {
           break;
 
         default:
-          sendMessage({
+          sendMessage(ws, {
             type: "error",
             data: "Unsupported language",
           });
@@ -342,256 +725,128 @@ wss.on("connection", (ws, req) => {
           return;
       }
 
-      // ========================================================
-      // CREATE TEMP DIRECTORY
-      // ========================================================
+      // ======================================================
+      // CREATE JOB
+      // ======================================================
 
-      const id = uuidv4();
+      const job = {
+        state,
+        ws,
 
-      currentDir = path.join(os.tmpdir(), id);
+        lang: data.lang,
+        code: data.code,
 
-      try {
-        fs.mkdirSync(currentDir, {
-          recursive: true,
-        });
-
-        // Write user source code
-        fs.writeFileSync(path.join(currentDir, filename), data.code);
-      } catch (err) {
-        console.error("❌ File creation error:", err);
-
-        cleanup();
-
-        sendMessage({
-          type: "error",
-          data: "Failed to prepare source code.",
-        });
-
-        return;
-      }
-
-      // ========================================================
-      // CREATE UNIQUE CONTAINER NAME
-      // ========================================================
-
-      containerName = `compiler-${id}`;
-
-      // ========================================================
-      // DOCKER COMMAND
-      // ========================================================
-
-      const dockerCmd = [
-        "run",
-
-        "--rm",
-        "-i",
-
-        // No internet access
-        "--network",
-        "none",
-
-        // Resource limits
-        "--memory",
-        "256m",
-
-        "--memory-swap",
-        "256m",
-
-        "--cpus",
-        "1",
-
-        "--pids-limit",
-        String(MAX_PIDS),
-
-        // Run as the same UID/GID as the Node process
-        "--user",
-        `${process.getuid()}:${process.getgid()}`,
-
-        // Security
-        "--cap-drop",
-        "ALL",
-
-        "--security-opt",
-        "no-new-privileges",
-
-        // Writable environment for compilers/runtimes
-        "-e",
-        "HOME=/tmp",
-
-        "-e",
-        "TMPDIR=/tmp",
-
-        "-e",
-        "XDG_CACHE_HOME=/tmp/.cache",
-
-        // Go
-        "-e",
-        "GOCACHE=/tmp/go-build",
-
-        "-e",
-        "GOPATH=/tmp/go",
-
-        // .NET / C#
-        "-e",
-        "DOTNET_CLI_HOME=/tmp/dotnet",
-
-        "-e",
-        "NUGET_PACKAGES=/tmp/nuget",
-
-        // Container name
-        "--name",
-        containerName,
-
-        // Source directory
-        "-v",
-        `${currentDir}:/workspace`,
-
-        "-w",
-        "/workspace",
-
-        // Language image
+        filename,
         dockerImage,
-
-        "bash",
-        "-c",
         execCmd,
-      ];
 
-      // ========================================================
-      // START EXECUTION
-      // ========================================================
+        proc: null,
+        timeout: null,
+        currentDir: null,
+        containerName: null,
 
-      isRunning = true;
-      activeRuns++;
-      outputBytes = 0;
+        outputBytes: 0,
+
+        started: false,
+        finished: false,
+        cancelled: false,
+
+        terminationMessageSent: false,
+
+        lastQueuePosition: null,
+      };
+
+      // Mark this WebSocket as occupied
+      state.isRunning = true;
+      state.currentJob = job;
+
+      // ======================================================
+      // ADD TO QUEUE
+      // ======================================================
+
+      executionQueue.push(job);
 
       console.log(
-        `🚀 Running ${data.lang} | container=${containerName} | active=${activeRuns}/${MAX_CONCURRENT_RUNS}`,
+        `📥 Job queued | language=${job.lang} | queue=${executionQueue.length} | active=${activeRuns}/${MAX_CONCURRENT_RUNS}`,
       );
 
-      proc = spawn("docker", dockerCmd);
+      // ======================================================
+      // START JOBS IF A SLOT IS AVAILABLE
+      // ======================================================
 
-      // --------------------------------------------------------
-      // TIMEOUT
-      // --------------------------------------------------------
+      processQueue();
 
-      timeout = setTimeout(() => {
-        if (!isRunning) return;
-
-        console.log(`⏰ Execution timeout: ${containerName}`);
-
-        sendMessage({
-          type: "error",
-          data: "Execution timed out (10 seconds).",
-        });
-
-        killContainer();
-      }, EXECUTION_TIMEOUT);
-
-      // --------------------------------------------------------
-      // STDOUT
-      // --------------------------------------------------------
-
-      proc.stdout.on("data", (chunk) => {
-        outputBytes += chunk.length;
-
-        if (outputBytes > MAX_OUTPUT_BYTES) {
-          sendMessage({
-            type: "error",
-            data: "Output limit exceeded (1 MB).",
-          });
-
-          killContainer();
-          return;
-        }
-
-        sendMessage({
-          type: "stdout",
-          data: chunk.toString(),
-        });
-      });
-
-      // --------------------------------------------------------
-      // STDERR
-      // --------------------------------------------------------
-
-      proc.stderr.on("data", (chunk) => {
-        outputBytes += chunk.length;
-
-        if (outputBytes > MAX_OUTPUT_BYTES) {
-          sendMessage({
-            type: "error",
-            data: "Output limit exceeded (1 MB).",
-          });
-
-          killContainer();
-          return;
-        }
-
-        sendMessage({
-          type: "stderr",
-          data: chunk.toString(),
-        });
-      });
-
-      // --------------------------------------------------------
-      // DOCKER PROCESS ERROR
-      // --------------------------------------------------------
-
-      proc.on("error", (err) => {
-        console.error("❌ Docker process error:", err);
-
-        sendMessage({
-          type: "error",
-          data: "Failed to start compiler.",
-        });
-
-        cleanup();
-      });
-
-      // --------------------------------------------------------
-      // PROCESS CLOSED
-      // --------------------------------------------------------
-
-      proc.on("close", (code) => {
-        console.log(
-          `🏁 Execution finished | container=${containerName} | code=${code}`,
-        );
-
-        if (isRunning) {
-          sendMessage({
-            type: "exit",
-            code,
-          });
-        }
-
-        cleanup();
-      });
+      // Update waiting users
+      notifyQueuePositions();
     }
 
-    // ==========================================================
+    // ========================================================
     // STDIN
-    // ==========================================================
+    // ========================================================
 
-    if (data.type === "stdin" && proc && isRunning) {
+    if (
+      data.type === "stdin" &&
+      state.currentJob &&
+      state.currentJob.started &&
+      state.proc
+    ) {
       try {
-        proc.stdin.write(data.data);
+        state.proc.stdin.write(data.data);
       } catch (err) {
         console.error("❌ Failed to write stdin:", err);
       }
     }
   });
 
-  // ============================================================
+  // ==========================================================
   // CLIENT DISCONNECTED
-  // ============================================================
+  // ==========================================================
 
   ws.on("close", () => {
     console.log("🔌 Client disconnected");
 
-    if (isRunning) {
-      killContainer();
-      cleanup();
+    const job = state.currentJob;
+
+    if (!job) {
+      return;
+    }
+
+    // --------------------------------------------------------
+    // JOB IS STILL WAITING IN QUEUE
+    // --------------------------------------------------------
+
+    if (!job.started) {
+      job.cancelled = true;
+
+      removeQueuedJob(job);
+
+      state.currentJob = null;
+      state.isRunning = false;
+
+      console.log(
+        `🗑️ Removed disconnected queued job | queue=${executionQueue.length}`,
+      );
+
+      // Start/update queue
+      processQueue();
+
+      return;
+    }
+
+    // --------------------------------------------------------
+    // JOB IS CURRENTLY RUNNING
+    // --------------------------------------------------------
+
+    if (job.started && !job.finished) {
+      console.log(
+        `🛑 Client disconnected while job was running: ${job.containerName}`,
+      );
+
+      if (!job.terminationMessageSent) {
+        job.terminationMessageSent = true;
+      }
+
+      killContainer(job);
     }
   });
 });
@@ -603,8 +858,20 @@ wss.on("connection", (ws, req) => {
 app.get("/", (_, res) => {
   res.json({
     status: "running",
+
     message: "Multi-language compiler backend running",
+
     websocket: `ws://localhost:${PORT}`,
+
+    activeExecutions: activeRuns,
+
+    queuedJobs: executionQueue.length,
+
+    maxConcurrentExecutions: MAX_CONCURRENT_RUNS,
+
+    maxQueueSize: MAX_QUEUE_SIZE,
+
+    maxCodeSize: `${MAX_CODE_SIZE_BYTES / 1024} KB`,
 
     supportedLanguages: [
       "python",
