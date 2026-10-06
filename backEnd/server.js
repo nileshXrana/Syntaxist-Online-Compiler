@@ -383,56 +383,45 @@ wss.on("connection", (ws, req) => {
       const dockerCmd = [
         "run",
 
-        // Delete container automatically after normal exit
         "--rm",
-
-        // Keep stdin open
         "-i",
 
-        // No internet access
         "--network",
         "none",
 
-        // RAM limit
         "--memory",
         "256m",
 
-        // Prevent swap beyond memory limit
         "--memory-swap",
         "256m",
 
-        // CPU limit: 1 full vCPU per execution
         "--cpus",
         "1",
 
-        // Process limit
         "--pids-limit",
         String(MAX_PIDS),
 
-        // Drop Linux capabilities
+        // Run as the same user that owns the host /tmp directory
+        "--user",
+        `${process.getuid()}:${process.getgid()}`,
+
         "--cap-drop",
         "ALL",
 
-        // Prevent privilege escalation
         "--security-opt",
         "no-new-privileges",
 
-        // Give container a unique name
         "--name",
         containerName,
 
-        // Mount source directory
         "-v",
         `${currentDir}:/workspace`,
 
-        // Working directory
         "-w",
         "/workspace",
 
-        // Docker image
         dockerImage,
 
-        // Execute command
         "bash",
         "-c",
         execCmd,
