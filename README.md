@@ -9,6 +9,13 @@
 
 🌐 **Live Demo**: <a href="https://syntaxist.nileshrana.tech/" target="_blank">syntaxist.nileshrana.tech</a>
 
+## ⚡ What's New in v2.0
+- **Queue System**: In-memory FIFO job queue with real-time position updates via WebSockets.
+- **Strict Concurrency**: Capped at 2 concurrent container runs to prevent server CPU spikes.
+- **Hardened Security**: `--network none`, `--cap-drop ALL`, and PID limits (max 64) to prevent fork bombs and malicious behavior.
+- **Resource Limits**: 256MB RAM cap, 30-second execution timeout, 100KB payload limit, and 1MB output buffer cap.
+- **Auto-Cleanup**: Immediate process SIGKILL and container removal upon client disconnect.
+
 ## ✨ Features
 
 ### 🎯 Core Capabilities
