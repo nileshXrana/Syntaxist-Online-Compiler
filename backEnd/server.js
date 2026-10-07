@@ -60,7 +60,7 @@ const allowedOrigins = new Set(
 // HTTP SERVER
 // ============================================================
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`✅ Express running on port ${PORT}`);
   console.log(`✅ WebSocket running on ws://localhost:${PORT}`);
 });
