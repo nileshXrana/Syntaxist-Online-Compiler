@@ -29,13 +29,13 @@ const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MB
 const MAX_CODE_SIZE_BYTES = 100 * 1024; // 100 KB
 
 // Maximum number of processes inside one container
-const MAX_PIDS = 64;
+const MAX_PIDS = 32;
 
 // VPS has 2 vCPUs, so only 2 jobs run at once
-const MAX_CONCURRENT_RUNS = 2;
+const MAX_CONCURRENT_RUNS = 4;
 
 // Maximum number of jobs waiting in memory
-const MAX_QUEUE_SIZE = 500;
+const MAX_QUEUE_SIZE = 1000;
 
 // Minimum time between two "run" requests from one client
 const RUN_COOLDOWN = 1000; // 1 second
@@ -593,7 +593,7 @@ const startExecution = (job) => {
 
     // One full vCPU
     "--cpus",
-    "1",
+    "0.25",
 
     // Process limit
     "--pids-limit",
