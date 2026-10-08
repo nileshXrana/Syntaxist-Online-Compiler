@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import { WebSocketServer, WebSocket } from "ws";
 import { spawn } from "child_process";
@@ -6,7 +7,6 @@ import path from "path";
 import os from "os";
 import { v4 as uuidv4 } from "uuid";
 import cors from "cors";
-import "dotenv/config";
 
 const app = express();
 
@@ -14,42 +14,43 @@ app.use(express.json());
 app.use(cors());
 
 // ============================================================
-// CONFIG
+// CONFIG (all values come from .env)
 // ============================================================
 
-const PORT = 5001;
+const PORT = Number(process.env.PORT);
+const HOST = process.env.HOST;
 
-// Maximum time one program can run
-const EXECUTION_TIMEOUT = 30_000; // 30 seconds
+// Maximum time one program can run (ms)
+const EXECUTION_TIMEOUT = Number(process.env.EXECUTION_TIMEOUT);
 
-// Maximum combined stdout + stderr
-const MAX_OUTPUT_BYTES = 1 * 1024 * 1024; // 1 MB
+// Maximum combined stdout + stderr (bytes)
+const MAX_OUTPUT_BYTES = Number(process.env.MAX_OUTPUT_BYTES);
 
-// Maximum source code size
-const MAX_CODE_SIZE_BYTES = 100 * 1024; // 100 KB
+// Maximum source code size (bytes)
+const MAX_CODE_SIZE_BYTES = Number(process.env.MAX_CODE_SIZE_BYTES);
 
 // Maximum number of processes inside one container
-const MAX_PIDS = 32;
+const MAX_PIDS = Number(process.env.MAX_PIDS);
 
-// VPS has 2 vCPUs, so only 2 jobs run at once
-const MAX_CONCURRENT_RUNS = 4;
+// Maximum number of jobs running at once
+const MAX_CONCURRENT_RUNS = Number(process.env.MAX_CONCURRENT_RUNS);
 
 // Maximum number of jobs waiting in memory
-const MAX_QUEUE_SIZE = 1000;
+const MAX_QUEUE_SIZE = Number(process.env.MAX_QUEUE_SIZE);
 
-// Minimum time between two "run" requests from one client
-const RUN_COOLDOWN = 1000; // 1 second
+// Minimum time between two "run" requests from one client (ms)
+const RUN_COOLDOWN = Number(process.env.RUN_COOLDOWN);
 
 // ============================================================
 // ANALYTICS LOGGING
 // ============================================================
 
-const ANALYTICS_LOG_DIR = "/var/log/syntaxist";
+const ANALYTICS_LOG_DIR = process.env.ANALYTICS_LOG_DIR;
 
-// Daily metrics use India time
+// Daily metrics use the configured timezone
 const getTodayKey = () => {
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
+    timeZone: process.env.ANALYTICS_TIMEZONE,
   }).format(new Date());
 };
 
@@ -153,19 +154,12 @@ const writeAnalyticsLog = (event, data = {}) => {
     metrics: getMetricsSnapshot(),
   };
 
-  const logFile = path.join(
-    ANALYTICS_LOG_DIR,
-    `${metrics.date}.jsonl`,
-  );
+  const logFile = path.join(ANALYTICS_LOG_DIR, `${metrics.date}.jsonl`);
 
   // Keep file writes ordered
   analyticsLogWriteChain = analyticsLogWriteChain
     .then(() =>
-      fs.promises.appendFile(
-        logFile,
-        `${JSON.stringify(entry)}\n`,
-        "utf8",
-      ),
+      fs.promises.appendFile(logFile, `${JSON.stringify(entry)}\n`, "utf8"),
     )
     .catch((err) => {
       // Logging failure must never stop the compiler
@@ -179,10 +173,7 @@ const writeAnalyticsLog = (event, data = {}) => {
 const restoreDailyMetrics = () => {
   resetDailyMetricsIfNeeded();
 
-  const logFile = path.join(
-    ANALYTICS_LOG_DIR,
-    `${metrics.date}.jsonl`,
-  );
+  const logFile = path.join(ANALYTICS_LOG_DIR, `${metrics.date}.jsonl`);
 
   if (!fs.existsSync(logFile)) {
     return;
@@ -202,20 +193,16 @@ const restoreDailyMetrics = () => {
 
         if (entry.metrics) {
           metrics.totalRequestsToday =
-            entry.metrics.totalRequestsToday ??
-            metrics.totalRequestsToday;
+            entry.metrics.totalRequestsToday ?? metrics.totalRequestsToday;
 
           metrics.peakQueueSize =
-            entry.metrics.peakQueueSize ??
-            metrics.peakQueueSize;
+            entry.metrics.peakQueueSize ?? metrics.peakQueueSize;
 
           metrics.peakQueueTime =
-            entry.metrics.peakQueueTime ??
-            metrics.peakQueueTime;
+            entry.metrics.peakQueueTime ?? metrics.peakQueueTime;
 
           metrics.peakActiveExecutions =
-            entry.metrics.peakActiveExecutions ??
-            metrics.peakActiveExecutions;
+            entry.metrics.peakActiveExecutions ?? metrics.peakActiveExecutions;
 
           metrics.runsByLanguage =
             entry.metrics.runsByLanguage || metrics.runsByLanguage;
@@ -229,10 +216,7 @@ const restoreDailyMetrics = () => {
             metrics.rateLimitedRequestsToday;
         }
 
-        if (
-          entry.ip &&
-          entry.ip !== "unknown"
-        ) {
+        if (entry.ip && entry.ip !== "unknown") {
           metrics.uniqueClientIps.add(entry.ip);
         }
       } catch {
@@ -264,19 +248,16 @@ const executionQueue = [];
 // ============================================================
 
 const allowedOrigins = new Set(
-  [
-    "http://localhost:3000",
-    process.env.FRONTEND_ORIGIN,
-  ].filter(Boolean),
+  ["http://localhost:3000", process.env.FRONTEND_ORIGIN].filter(Boolean),
 );
 
 // ============================================================
 // HTTP SERVER
 // ============================================================
 
-const server = app.listen(PORT, "127.0.0.1", () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`Express running on port ${PORT}`);
-  console.log(`WebSocket running on ws://localhost:${PORT}`);
+  console.log(`WebSocket running on ws://${HOST}:${PORT}`);
 });
 
 // ============================================================
@@ -287,7 +268,7 @@ const wss = new WebSocketServer({
   noServer: true,
 
   // Prevent extremely large WebSocket messages
-  maxPayload: 1 * 1024 * 1024,
+  maxPayload: Number(process.env.WS_MAX_PAYLOAD),
 });
 
 // ============================================================
@@ -356,17 +337,11 @@ const removeQueuedJob = (job) => {
 // ============================================================
 
 const processQueue = () => {
-  while (
-    activeRuns < MAX_CONCURRENT_RUNS &&
-    executionQueue.length > 0
-  ) {
+  while (activeRuns < MAX_CONCURRENT_RUNS && executionQueue.length > 0) {
     const job = executionQueue.shift();
 
     // Skip cancelled/disconnected jobs
-    if (
-      job.cancelled ||
-      job.ws.readyState !== WebSocket.OPEN
-    ) {
+    if (job.cancelled || job.ws.readyState !== WebSocket.OPEN) {
       if (job.state.currentJob === job) {
         job.state.currentJob = null;
         job.state.isRunning = false;
@@ -408,10 +383,7 @@ const finishJob = (job, exitCode = null) => {
         force: true,
       });
     } catch (err) {
-      console.error(
-        "Failed to remove temp directory:",
-        err,
-      );
+      console.error("Failed to remove temp directory:", err);
     }
 
     job.currentDir = null;
@@ -432,10 +404,7 @@ const finishJob = (job, exitCode = null) => {
   }
 
   // Normal process completion
-  if (
-    exitCode !== null &&
-    !job.terminationMessageSent
-  ) {
+  if (exitCode !== null && !job.terminationMessageSent) {
     sendMessage(job.ws, {
       type: "exit",
       code: exitCode,
@@ -455,20 +424,12 @@ const finishJob = (job, exitCode = null) => {
 
 const killContainer = (job) => {
   if (job.containerName) {
-    console.log(
-      `Killing container: ${job.containerName}`,
-    );
+    console.log(`Killing container: ${job.containerName}`);
 
-    const removeProc = spawn(
-      "docker",
-      ["rm", "-f", job.containerName],
-    );
+    const removeProc = spawn("docker", ["rm", "-f", job.containerName]);
 
     removeProc.on("error", (err) => {
-      console.error(
-        "Failed to remove container:",
-        err,
-      );
+      console.error("Failed to remove container:", err);
     });
   }
 
@@ -486,11 +447,7 @@ const killContainer = (job) => {
 // ============================================================
 
 const startExecution = (job) => {
-  if (
-    job.cancelled ||
-    job.finished ||
-    job.ws.readyState !== WebSocket.OPEN
-  ) {
+  if (job.cancelled || job.finished || job.ws.readyState !== WebSocket.OPEN) {
     return;
   }
 
@@ -514,10 +471,7 @@ const startExecution = (job) => {
 
   const id = uuidv4();
 
-  job.currentDir = path.join(
-    os.tmpdir(),
-    id,
-  );
+  job.currentDir = path.join(os.tmpdir(), id);
 
   try {
     fs.mkdirSync(job.currentDir, {
@@ -528,18 +482,9 @@ const startExecution = (job) => {
     // WRITE SOURCE CODE
     // --------------------------------------------------------
 
-    fs.writeFileSync(
-      path.join(
-        job.currentDir,
-        job.filename,
-      ),
-      job.code,
-    );
+    fs.writeFileSync(path.join(job.currentDir, job.filename), job.code);
   } catch (err) {
-    console.error(
-      "File creation error:",
-      err,
-    );
+    console.error("File creation error:", err);
 
     job.terminationMessageSent = true;
 
@@ -585,15 +530,15 @@ const startExecution = (job) => {
 
     // Memory limit
     "--memory",
-    "256m",
+    process.env.DOCKER_MEMORY,
 
     // Prevent swap
     "--memory-swap",
-    "256m",
+    process.env.DOCKER_MEMORY_SWAP,
 
-    // One full vCPU
+    // CPU limit
     "--cpus",
-    "0.25",
+    process.env.DOCKER_CPUS,
 
     // Process limit
     "--pids-limit",
@@ -667,10 +612,7 @@ const startExecution = (job) => {
     `Running ${job.lang} | container=${job.containerName} | active=${activeRuns}/${MAX_CONCURRENT_RUNS}`,
   );
 
-  job.proc = spawn(
-    "docker",
-    dockerCmd,
-  );
+  job.proc = spawn("docker", dockerCmd);
 
   state.proc = job.proc;
   state.containerName = job.containerName;
@@ -680,16 +622,11 @@ const startExecution = (job) => {
   // ----------------------------------------------------------
 
   job.timeout = setTimeout(() => {
-    if (
-      job.finished ||
-      job.terminationMessageSent
-    ) {
+    if (job.finished || job.terminationMessageSent) {
       return;
     }
 
-    console.log(
-      `Execution timeout: ${job.containerName}`,
-    );
+    console.log(`Execution timeout: ${job.containerName}`);
 
     job.terminationMessageSent = true;
 
@@ -700,7 +637,7 @@ const startExecution = (job) => {
 
     sendMessage(job.ws, {
       type: "error",
-      data: "Execution timed out (30 seconds).",
+      data: `Execution timed out (${EXECUTION_TIMEOUT / 1000} seconds).`,
     });
 
     killContainer(job);
@@ -710,713 +647,528 @@ const startExecution = (job) => {
   // STDOUT
   // ----------------------------------------------------------
 
-  job.proc.stdout.on(
-    "data",
-    (chunk) => {
-      if (
-        job.finished ||
-        job.terminationMessageSent
-      ) {
-        return;
-      }
+  job.proc.stdout.on("data", (chunk) => {
+    if (job.finished || job.terminationMessageSent) {
+      return;
+    }
 
-      job.outputBytes += chunk.length;
+    job.outputBytes += chunk.length;
 
-      if (
-        job.outputBytes >
-        MAX_OUTPUT_BYTES
-      ) {
-        console.log(
-          `Output limit exceeded: ${job.containerName}`,
-        );
+    if (job.outputBytes > MAX_OUTPUT_BYTES) {
+      console.log(`Output limit exceeded: ${job.containerName}`);
 
-        job.terminationMessageSent = true;
+      job.terminationMessageSent = true;
 
-        writeAnalyticsLog(
-          "output_limit_exceeded",
-          {
-            ip: job.clientIp,
-            language: job.lang,
-          },
-        );
-
-        sendMessage(job.ws, {
-          type: "error",
-          data: "Output limit exceeded (1 MB).",
-        });
-
-        killContainer(job);
-
-        return;
-      }
+      writeAnalyticsLog("output_limit_exceeded", {
+        ip: job.clientIp,
+        language: job.lang,
+      });
 
       sendMessage(job.ws, {
-        type: "stdout",
-        data: chunk.toString(),
+        type: "error",
+        data: `Output limit exceeded (${MAX_OUTPUT_BYTES / 1024 / 1024} MB).`,
       });
-    },
-  );
+
+      killContainer(job);
+
+      return;
+    }
+
+    sendMessage(job.ws, {
+      type: "stdout",
+      data: chunk.toString(),
+    });
+  });
 
   // ----------------------------------------------------------
   // STDERR
   // ----------------------------------------------------------
 
-  job.proc.stderr.on(
-    "data",
-    (chunk) => {
-      if (
-        job.finished ||
-        job.terminationMessageSent
-      ) {
-        return;
-      }
+  job.proc.stderr.on("data", (chunk) => {
+    if (job.finished || job.terminationMessageSent) {
+      return;
+    }
 
-      job.outputBytes += chunk.length;
+    job.outputBytes += chunk.length;
 
-      if (
-        job.outputBytes >
-        MAX_OUTPUT_BYTES
-      ) {
-        console.log(
-          `Output limit exceeded: ${job.containerName}`,
-        );
+    if (job.outputBytes > MAX_OUTPUT_BYTES) {
+      console.log(`Output limit exceeded: ${job.containerName}`);
 
-        job.terminationMessageSent = true;
+      job.terminationMessageSent = true;
 
-        writeAnalyticsLog(
-          "output_limit_exceeded",
-          {
-            ip: job.clientIp,
-            language: job.lang,
-          },
-        );
-
-        sendMessage(job.ws, {
-          type: "error",
-          data: "Output limit exceeded (1 MB).",
-        });
-
-        killContainer(job);
-
-        return;
-      }
+      writeAnalyticsLog("output_limit_exceeded", {
+        ip: job.clientIp,
+        language: job.lang,
+      });
 
       sendMessage(job.ws, {
-        type: "stderr",
-        data: chunk.toString(),
+        type: "error",
+        data: `Output limit exceeded (${MAX_OUTPUT_BYTES / 1024 / 1024} MB).`,
       });
-    },
-  );
+
+      killContainer(job);
+
+      return;
+    }
+
+    sendMessage(job.ws, {
+      type: "stderr",
+      data: chunk.toString(),
+    });
+  });
 
   // ----------------------------------------------------------
   // DOCKER PROCESS ERROR
   // ----------------------------------------------------------
 
-  job.proc.on(
-    "error",
-    (err) => {
-      console.error(
-        "Docker process error:",
-        err,
-      );
+  job.proc.on("error", (err) => {
+    console.error("Docker process error:", err);
 
-      if (
-        !job.terminationMessageSent
-      ) {
-        job.terminationMessageSent = true;
+    if (!job.terminationMessageSent) {
+      job.terminationMessageSent = true;
 
-        writeAnalyticsLog(
-          "execution_error",
-          {
-            ip: job.clientIp,
-            language: job.lang,
-          },
-        );
+      writeAnalyticsLog("execution_error", {
+        ip: job.clientIp,
+        language: job.lang,
+      });
 
-        sendMessage(job.ws, {
-          type: "error",
-          data: "Failed to start compiler.",
-        });
-      }
+      sendMessage(job.ws, {
+        type: "error",
+        data: "Failed to start compiler.",
+      });
+    }
 
-      finishJob(job);
-    },
-  );
+    finishJob(job);
+  });
 
   // ----------------------------------------------------------
   // DOCKER PROCESS CLOSED
   // ----------------------------------------------------------
 
-  job.proc.on(
-    "close",
-    (code) => {
-      finishJob(job, code);
-    },
-  );
+  job.proc.on("close", (code) => {
+    finishJob(job, code);
+  });
 };
 
 // ============================================================
 // WEBSOCKET CONNECTION
 // ============================================================
 
-wss.on(
-  "connection",
-  (ws, req) => {
-    const clientIp =
-      getClientIp(req);
+wss.on("connection", (ws, req) => {
+  const clientIp = getClientIp(req);
 
-    resetDailyMetricsIfNeeded();
+  resetDailyMetricsIfNeeded();
 
-    if (clientIp !== "unknown") {
-      metrics.uniqueClientIps.add(
-        clientIp,
-      );
+  if (clientIp !== "unknown") {
+    metrics.uniqueClientIps.add(clientIp);
+  }
+
+  writeAnalyticsLog("client_connected", {
+    ip: clientIp,
+  });
+
+  console.log("Client connected from:", req.headers.origin || "unknown origin");
+
+  const state = {
+    ws,
+    clientIp,
+
+    proc: null,
+    containerName: null,
+
+    currentJob: null,
+    isRunning: false,
+
+    lastRunAt: 0,
+  };
+
+  // ========================================================
+  // MESSAGE HANDLER
+  // ========================================================
+
+  ws.on("message", (msg) => {
+    let data;
+
+    // ----------------------------------------------------
+    // PARSE JSON
+    // ----------------------------------------------------
+
+    try {
+      data = JSON.parse(msg.toString());
+    } catch {
+      sendMessage(ws, {
+        type: "error",
+        data: "Invalid JSON message",
+      });
+
+      return;
     }
 
-    writeAnalyticsLog(
-      "client_connected",
-      {
-        ip: clientIp,
-      },
-    );
+    // ====================================================
+    // RUN
+    // ====================================================
 
-    console.log(
-      "Client connected from:",
-      req.headers.origin ||
-        "unknown origin",
-    );
+    if (data.type === "run") {
+      resetDailyMetricsIfNeeded();
 
-    const state = {
-      ws,
-      clientIp,
+      // Count every run request
+      metrics.totalRequestsToday++;
 
-      proc: null,
-      containerName: null,
+      // Add the IP again here so a user who stays
+      // connected across midnight is counted for today.
+      if (state.clientIp !== "unknown") {
+        metrics.uniqueClientIps.add(state.clientIp);
+      }
 
-      currentJob: null,
-      isRunning: false,
+      writeAnalyticsLog("run_request", {
+        ip: state.clientIp,
+        language: data.lang || "unknown",
+      });
 
-      lastRunAt: 0,
-    };
+      // --------------------------------------------------
+      // ONE JOB PER WEBSOCKET
+      // --------------------------------------------------
 
-    // ========================================================
-    // MESSAGE HANDLER
-    // ========================================================
+      if (state.isRunning) {
+        metrics.rejectedRequestsToday++;
 
-    ws.on(
-      "message",
-      (msg) => {
-        let data;
+        writeAnalyticsLog("rejected_request", {
+          ip: state.clientIp,
+          language: data.lang || "unknown",
+          reason: "job_already_running",
+        });
 
-        // ----------------------------------------------------
-        // PARSE JSON
-        // ----------------------------------------------------
+        sendMessage(ws, {
+          type: "error",
+          data: "A program is already running. Please wait for it to finish.",
+        });
 
-        try {
-          data = JSON.parse(
-            msg.toString(),
-          );
-        } catch {
+        return;
+      }
+
+      // --------------------------------------------------
+      // RATE LIMIT
+      // --------------------------------------------------
+
+      const now = Date.now();
+
+      if (now - state.lastRunAt < RUN_COOLDOWN) {
+        metrics.rateLimitedRequestsToday++;
+
+        writeAnalyticsLog("rate_limited_request", {
+          ip: state.clientIp,
+          language: data.lang || "unknown",
+        });
+
+        sendMessage(ws, {
+          type: "error",
+          data: "Please wait before running another program.",
+        });
+
+        return;
+      }
+
+      state.lastRunAt = now;
+
+      // --------------------------------------------------
+      // VALIDATE CODE
+      // --------------------------------------------------
+
+      if (typeof data.code !== "string") {
+        metrics.rejectedRequestsToday++;
+
+        writeAnalyticsLog("rejected_request", {
+          ip: state.clientIp,
+          language: data.lang || "unknown",
+          reason: "invalid_source_code",
+        });
+
+        sendMessage(ws, {
+          type: "error",
+          data: "Invalid source code.",
+        });
+
+        return;
+      }
+
+      // --------------------------------------------------
+      // SOURCE CODE SIZE LIMIT
+      // --------------------------------------------------
+
+      const codeSizeBytes = Buffer.byteLength(data.code, "utf8");
+
+      if (codeSizeBytes > MAX_CODE_SIZE_BYTES) {
+        metrics.rejectedRequestsToday++;
+
+        writeAnalyticsLog("rejected_request", {
+          ip: state.clientIp,
+          language: data.lang || "unknown",
+          reason: "source_code_too_large",
+        });
+
+        sendMessage(ws, {
+          type: "error",
+          data: `Source code is too large. Maximum allowed size is ${MAX_CODE_SIZE_BYTES / 1024} KB.`,
+        });
+
+        return;
+      }
+
+      // --------------------------------------------------
+      // QUEUE LIMIT
+      // --------------------------------------------------
+
+      if (executionQueue.length >= MAX_QUEUE_SIZE) {
+        metrics.rejectedRequestsToday++;
+
+        writeAnalyticsLog("rejected_request", {
+          ip: state.clientIp,
+          language: data.lang || "unknown",
+          reason: "queue_full",
+        });
+
+        sendMessage(ws, {
+          type: "error",
+          data: "Compiler queue is full. Please try again later.",
+        });
+
+        return;
+      }
+
+      // --------------------------------------------------
+      // LANGUAGE CONFIG
+      // --------------------------------------------------
+
+      let filename;
+      let dockerImage;
+      let execCmd;
+
+      switch (data.lang) {
+        case "cpp":
+          filename = "main.cpp";
+          dockerImage = process.env.CPP_IMAGE;
+          execCmd = "g++ main.cpp -o main.out && ./main.out";
+          break;
+
+        case "python":
+          filename = "main.py";
+          dockerImage = process.env.PYTHON_IMAGE;
+          execCmd = "python3 main.py";
+          break;
+
+        case "java":
+          filename = "Main.java";
+          dockerImage = process.env.JAVA_IMAGE;
+          execCmd = "javac Main.java && java Main";
+          break;
+
+        case "javascript":
+          filename = "main.js";
+          dockerImage = process.env.JAVASCRIPT_IMAGE;
+          execCmd = "node main.js";
+          break;
+
+        case "go":
+          filename = "main.go";
+          dockerImage = process.env.GO_IMAGE;
+          execCmd = "go run main.go";
+          break;
+
+        case "ruby":
+          filename = "main.rb";
+          dockerImage = process.env.RUBY_IMAGE;
+          execCmd = "ruby main.rb";
+          break;
+
+        case "php":
+          filename = "main.php";
+          dockerImage = process.env.PHP_IMAGE;
+          execCmd = "php main.php";
+          break;
+
+        case "rust":
+          filename = "main.rs";
+          dockerImage = process.env.RUST_IMAGE;
+          execCmd = "rustc main.rs -o main.out && ./main.out";
+          break;
+
+        case "swift":
+          filename = "main.swift";
+          dockerImage = process.env.SWIFT_IMAGE;
+          execCmd = "swift main.swift";
+          break;
+
+        case "csharp":
+          filename = "Program.cs";
+          dockerImage = process.env.CSHARP_IMAGE;
+          execCmd =
+            "dotnet new console -o app --no-restore && " +
+            "mv Program.cs app/Program.cs && " +
+            "cd app && dotnet run";
+          break;
+
+        default:
+          metrics.rejectedRequestsToday++;
+
+          writeAnalyticsLog("rejected_request", {
+            ip: state.clientIp,
+            language: data.lang || "unknown",
+            reason: "unsupported_language",
+          });
+
           sendMessage(ws, {
             type: "error",
-            data: "Invalid JSON message",
+            data: "Unsupported language",
           });
 
           return;
-        }
-
-        // ====================================================
-        // RUN
-        // ====================================================
-
-        if (data.type === "run") {
-          resetDailyMetricsIfNeeded();
-
-          // Count every run request
-          metrics.totalRequestsToday++;
-
-          // Add the IP again here so a user who stays
-          // connected across midnight is counted for today.
-          if (
-            state.clientIp !==
-            "unknown"
-          ) {
-            metrics.uniqueClientIps.add(
-              state.clientIp,
-            );
-          }
-
-          writeAnalyticsLog(
-            "run_request",
-            {
-              ip: state.clientIp,
-              language:
-                data.lang ||
-                "unknown",
-            },
-          );
-
-          // --------------------------------------------------
-          // ONE JOB PER WEBSOCKET
-          // --------------------------------------------------
-
-          if (state.isRunning) {
-            metrics.rejectedRequestsToday++;
-
-            writeAnalyticsLog(
-              "rejected_request",
-              {
-                ip: state.clientIp,
-                language:
-                  data.lang ||
-                  "unknown",
-                reason:
-                  "job_already_running",
-              },
-            );
-
-            sendMessage(ws, {
-              type: "error",
-              data:
-                "A program is already running. Please wait for it to finish.",
-            });
-
-            return;
-          }
-
-          // --------------------------------------------------
-          // RATE LIMIT
-          // --------------------------------------------------
-
-          const now = Date.now();
-
-          if (
-            now - state.lastRunAt <
-            RUN_COOLDOWN
-          ) {
-            metrics.rateLimitedRequestsToday++;
-
-            writeAnalyticsLog(
-              "rate_limited_request",
-              {
-                ip: state.clientIp,
-                language:
-                  data.lang ||
-                  "unknown",
-              },
-            );
-
-            sendMessage(ws, {
-              type: "error",
-              data:
-                "Please wait before running another program.",
-            });
-
-            return;
-          }
-
-          state.lastRunAt = now;
-
-          // --------------------------------------------------
-          // VALIDATE CODE
-          // --------------------------------------------------
-
-          if (
-            typeof data.code !==
-            "string"
-          ) {
-            metrics.rejectedRequestsToday++;
-
-            writeAnalyticsLog(
-              "rejected_request",
-              {
-                ip: state.clientIp,
-                language:
-                  data.lang ||
-                  "unknown",
-                reason:
-                  "invalid_source_code",
-              },
-            );
-
-            sendMessage(ws, {
-              type: "error",
-              data:
-                "Invalid source code.",
-            });
-
-            return;
-          }
-
-          // --------------------------------------------------
-          // SOURCE CODE SIZE LIMIT
-          // --------------------------------------------------
-
-          const codeSizeBytes =
-            Buffer.byteLength(
-              data.code,
-              "utf8",
-            );
-
-          if (
-            codeSizeBytes >
-            MAX_CODE_SIZE_BYTES
-          ) {
-            metrics.rejectedRequestsToday++;
-
-            writeAnalyticsLog(
-              "rejected_request",
-              {
-                ip: state.clientIp,
-                language:
-                  data.lang ||
-                  "unknown",
-                reason:
-                  "source_code_too_large",
-              },
-            );
-
-            sendMessage(ws, {
-              type: "error",
-              data:
-                "Source code is too large. Maximum allowed size is 100 KB.",
-            });
-
-            return;
-          }
-
-          // --------------------------------------------------
-          // QUEUE LIMIT
-          // --------------------------------------------------
-
-          if (
-            executionQueue.length >=
-            MAX_QUEUE_SIZE
-          ) {
-            metrics.rejectedRequestsToday++;
-
-            writeAnalyticsLog(
-              "rejected_request",
-              {
-                ip: state.clientIp,
-                language:
-                  data.lang ||
-                  "unknown",
-                reason: "queue_full",
-              },
-            );
-
-            sendMessage(ws, {
-              type: "error",
-              data:
-                "Compiler queue is full. Please try again later.",
-            });
-
-            return;
-          }
-
-          // --------------------------------------------------
-          // LANGUAGE CONFIG
-          // --------------------------------------------------
-
-          let filename;
-          let dockerImage;
-          let execCmd;
-
-          switch (data.lang) {
-            case "cpp":
-              filename = "main.cpp";
-              dockerImage =
-                "cpp-runner";
-              execCmd =
-                "g++ main.cpp -o main.out && ./main.out";
-              break;
-
-            case "python":
-              filename = "main.py";
-              dockerImage =
-                "py-runner";
-              execCmd =
-                "python3 main.py";
-              break;
-
-            case "java":
-              filename = "Main.java";
-              dockerImage =
-                "java-runner";
-              execCmd =
-                "javac Main.java && java Main";
-              break;
-
-            case "javascript":
-              filename = "main.js";
-              dockerImage =
-                "js-runner";
-              execCmd =
-                "node main.js";
-              break;
-
-            case "go":
-              filename = "main.go";
-              dockerImage =
-                "go-runner";
-              execCmd =
-                "go run main.go";
-              break;
-
-            case "ruby":
-              filename = "main.rb";
-              dockerImage =
-                "ruby-runner";
-              execCmd =
-                "ruby main.rb";
-              break;
-
-            case "php":
-              filename = "main.php";
-              dockerImage =
-                "php-runner";
-              execCmd =
-                "php main.php";
-              break;
-
-            case "rust":
-              filename = "main.rs";
-              dockerImage =
-                "rust-runner";
-              execCmd =
-                "rustc main.rs -o main.out && ./main.out";
-              break;
-
-            case "swift":
-              filename = "main.swift";
-              dockerImage =
-                "swift-runner";
-              execCmd =
-                "swift main.swift";
-              break;
-
-            case "csharp":
-              filename = "Program.cs";
-              dockerImage =
-                "csharp-runner";
-
-              execCmd =
-                "dotnet new console -o app --no-restore && " +
-                "mv Program.cs app/Program.cs && " +
-                "cd app && dotnet run";
-
-              break;
-
-            default:
-              metrics.rejectedRequestsToday++;
-
-              writeAnalyticsLog(
-                "rejected_request",
-                {
-                  ip: state.clientIp,
-                  language:
-                    data.lang ||
-                    "unknown",
-                  reason:
-                    "unsupported_language",
-                },
-              );
-
-              sendMessage(ws, {
-                type: "error",
-                data:
-                  "Unsupported language",
-              });
-
-              return;
-          }
-
-          // ==================================================
-          // CREATE JOB
-          // ==================================================
-
-          const job = {
-            state,
-            ws,
-
-            clientIp:
-              state.clientIp,
-
-            lang: data.lang,
-            code: data.code,
-
-            filename,
-            dockerImage,
-            execCmd,
-
-            proc: null,
-            timeout: null,
-            currentDir: null,
-            containerName: null,
-
-            outputBytes: 0,
-
-            started: false,
-            finished: false,
-            cancelled: false,
-
-            terminationMessageSent:
-              false,
-
-            lastQueuePosition:
-              null,
-          };
-
-          // Mark this WebSocket as occupied
-          state.isRunning = true;
-          state.currentJob = job;
-
-          // ==================================================
-          // ADD TO QUEUE
-          // ==================================================
-
-          executionQueue.push(job);
-
-          // Track peak queue size
-          if (
-            executionQueue.length >
-            metrics.peakQueueSize
-          ) {
-            metrics.peakQueueSize =
-              executionQueue.length;
-
-            metrics.peakQueueTime =
-              new Date().toISOString();
-          }
-
-          // Track language usage
-          if (
-            !metrics.runsByLanguage[
-              data.lang
-            ]
-          ) {
-            metrics.runsByLanguage[
-              data.lang
-            ] = 0;
-          }
-
-          metrics.runsByLanguage[
-            data.lang
-          ]++;
-
-          writeAnalyticsLog(
-            "run_queued",
-            {
-              ip: state.clientIp,
-              language:
-                data.lang,
-              queuePosition:
-                executionQueue.length,
-            },
-          );
-
-          console.log(
-            `Job queued | language=${job.lang} | queue=${executionQueue.length} | active=${activeRuns}/${MAX_CONCURRENT_RUNS}`,
-          );
-
-          // ==================================================
-          // START JOBS IF SLOT AVAILABLE
-          // ==================================================
-
-          processQueue();
-
-          notifyQueuePositions();
-        }
-
-        // ====================================================
-        // STDIN
-        // ====================================================
-
-        if (
-          data.type === "stdin" &&
-          state.currentJob &&
-          state.currentJob.started &&
-          state.proc
-        ) {
-          try {
-            state.proc.stdin.write(
-              data.data,
-            );
-          } catch (err) {
-            console.error(
-              "Failed to write stdin:",
-              err,
-            );
-          }
-        }
-      },
-    );
-
-    // ========================================================
-    // CLIENT DISCONNECTED
-    // ========================================================
-
-    ws.on(
-      "close",
-      () => {
-        console.log(
-          "Client disconnected",
-        );
-
-        const job =
-          state.currentJob;
-
-        if (!job) {
-          return;
-        }
-
-        // ----------------------------------------------------
-        // JOB WAITING IN QUEUE
-        // ----------------------------------------------------
-
-        if (!job.started) {
-          job.cancelled = true;
-
-          removeQueuedJob(job);
-
-          state.currentJob = null;
-          state.isRunning = false;
-
-          console.log(
-            `Removed disconnected queued job | queue=${executionQueue.length}`,
-          );
-
-          processQueue();
-
-          return;
-        }
-
-        // ----------------------------------------------------
-        // JOB CURRENTLY RUNNING
-        // ----------------------------------------------------
-
-        if (
-          job.started &&
-          !job.finished
-        ) {
-          console.log(
-            `Client disconnected while job was running: ${job.containerName}`,
-          );
-
-          if (
-            !job.terminationMessageSent
-          ) {
-            job.terminationMessageSent =
-              true;
-          }
-
-          killContainer(job);
-        }
-      },
-    );
-  },
-);
+      }
+
+      // ==================================================
+      // CREATE JOB
+      // ==================================================
+
+      const job = {
+        state,
+        ws,
+
+        clientIp: state.clientIp,
+
+        lang: data.lang,
+        code: data.code,
+
+        filename,
+        dockerImage,
+        execCmd,
+
+        proc: null,
+        timeout: null,
+        currentDir: null,
+        containerName: null,
+
+        outputBytes: 0,
+
+        started: false,
+        finished: false,
+        cancelled: false,
+
+        terminationMessageSent: false,
+
+        lastQueuePosition: null,
+      };
+
+      // Mark this WebSocket as occupied
+      state.isRunning = true;
+      state.currentJob = job;
+
+      // ==================================================
+      // ADD TO QUEUE
+      // ==================================================
+
+      executionQueue.push(job);
+
+      // Track peak queue size
+      if (executionQueue.length > metrics.peakQueueSize) {
+        metrics.peakQueueSize = executionQueue.length;
+
+        metrics.peakQueueTime = new Date().toISOString();
+      }
+
+      // Track language usage
+      if (!metrics.runsByLanguage[data.lang]) {
+        metrics.runsByLanguage[data.lang] = 0;
+      }
+
+      metrics.runsByLanguage[data.lang]++;
+
+      writeAnalyticsLog("run_queued", {
+        ip: state.clientIp,
+        language: data.lang,
+        queuePosition: executionQueue.length,
+      });
+
+      console.log(
+        `Job queued | language=${job.lang} | queue=${executionQueue.length} | active=${activeRuns}/${MAX_CONCURRENT_RUNS}`,
+      );
+
+      // ==================================================
+      // START JOBS IF SLOT AVAILABLE
+      // ==================================================
+
+      processQueue();
+
+      notifyQueuePositions();
+    }
+
+    // ====================================================
+    // STDIN
+    // ====================================================
+
+    if (
+      data.type === "stdin" &&
+      state.currentJob &&
+      state.currentJob.started &&
+      state.proc
+    ) {
+      try {
+        state.proc.stdin.write(data.data);
+      } catch (err) {
+        console.error("Failed to write stdin:", err);
+      }
+    }
+  });
+
+  // ========================================================
+  // CLIENT DISCONNECTED
+  // ========================================================
+
+  ws.on("close", () => {
+    console.log("Client disconnected");
+
+    const job = state.currentJob;
+
+    if (!job) {
+      return;
+    }
+
+    // ----------------------------------------------------
+    // JOB WAITING IN QUEUE
+    // ----------------------------------------------------
+
+    if (!job.started) {
+      job.cancelled = true;
+
+      removeQueuedJob(job);
+
+      state.currentJob = null;
+      state.isRunning = false;
+
+      console.log(
+        `Removed disconnected queued job | queue=${executionQueue.length}`,
+      );
+
+      processQueue();
+
+      return;
+    }
+
+    // ----------------------------------------------------
+    // JOB CURRENTLY RUNNING
+    // ----------------------------------------------------
+
+    if (job.started && !job.finished) {
+      console.log(
+        `Client disconnected while job was running: ${job.containerName}`,
+      );
+
+      if (!job.terminationMessageSent) {
+        job.terminationMessageSent = true;
+      }
+
+      killContainer(job);
+    }
+  });
+});
 
 // ============================================================
 // HEALTH CHECK
@@ -1426,26 +1178,19 @@ app.get("/", (_, res) => {
   res.json({
     status: "running",
 
-    message:
-      "Multi-language compiler backend running",
+    message: "Multi-language compiler backend running",
 
-    websocket:
-      `ws://localhost:${PORT}`,
+    websocket: `ws://${HOST}:${PORT}`,
 
-    activeExecutions:
-      activeRuns,
+    activeExecutions: activeRuns,
 
-    queuedJobs:
-      executionQueue.length,
+    queuedJobs: executionQueue.length,
 
-    maxConcurrentExecutions:
-      MAX_CONCURRENT_RUNS,
+    maxConcurrentExecutions: MAX_CONCURRENT_RUNS,
 
-    maxQueueSize:
-      MAX_QUEUE_SIZE,
+    maxQueueSize: MAX_QUEUE_SIZE,
 
-    maxCodeSize:
-      `${MAX_CODE_SIZE_BYTES / 1024} KB`,
+    maxCodeSize: `${MAX_CODE_SIZE_BYTES / 1024} KB`,
 
     supportedLanguages: [
       "python",
