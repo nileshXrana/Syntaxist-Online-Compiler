@@ -6,7 +6,7 @@ import AnalysisPopup from "./components/AnalysisPopup";
 import { toast } from "react-toastify";
 
 export default function Home() {
-  const [selectedLanguage, setSelectedLanguage] = useState<string>("java");
+  const [selectedLanguage, setSelectedLanguage] = useState<string>("javascript");
   const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
   const [isPopupOpen, setIsPopupOpen] = useState<boolean>(false);
   const [popupContent, setPopupContent] = useState<string>("");
